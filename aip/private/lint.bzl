@@ -15,6 +15,43 @@ when the layout is idiomatic.
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("@protobuf//bazel/common:proto_info.bzl", "ProtoInfo")
 
+# protobuf's own proto_library resolves protoc through this toolchain type rather
+# than naming a target, and //bazel/private/toolchain_helpers.bzl says outright
+# that other repos should COPY the two helpers below instead of loading them from
+# a private package. That is what these are.
+#
+# Why it matters here: a direct `@protobuf//:protoc` label is the FROM-SOURCE
+# cc_binary. Depending on it forces protobuf, abseil and upb to be compiled — so
+# every consumer of this rule needs a working C++ toolchain fetched AND executed,
+# in repos that frequently contain no C++ at all. It also makes
+# `--@protobuf//bazel/toolchains:prefer_prebuilt_protoc` inert, because that flag
+# redirects the toolchain this rule never consulted. Resolving the toolchain lets
+# the prebuilt protoc win, and the compiler leaves the graph entirely.
+_PROTO_TOOLCHAIN = Label("@protobuf//bazel/private:proto_toolchain_type")
+
+def _use_proto_toolchain():
+    return [config_common.toolchain_type(_PROTO_TOOLCHAIN, mandatory = False)]
+
+def _resolve_protoc(ctx):
+    """protoc from the proto toolchain.
+
+    There is deliberately NO attribute fallback. An `attr.label` default is a
+    dependency edge whether or not the implementation reads it, so keeping one
+    pointed at `@protobuf//:protoc` would still drag the from-source cc_binary
+    through ANALYSIS — and analysing it needs a C++ toolchain, which is the whole
+    problem. Measured: with the fallback attr present the prebuilt was used and
+    CppCompile actions were 0, yet `cc_binary @protobuf//:protoc` remained in
+    `deps()`. Removing the attr is what removes the edge.
+    """
+    toolchain = ctx.toolchains[_PROTO_TOOLCHAIN]
+    if not toolchain or not toolchain.proto:
+        fail(
+            "aip_proto_lint needs proto toolchain resolution, which is on by " +
+            "default in Bazel 9. On Bazel 8 or older, add " +
+            "--incompatible_enable_proto_toolchain_resolution.",
+        )
+    return toolchain.proto.proto_compiler
+
 def _import_path(f, root):
     """The file's name as recorded in the descriptor set (what api-linter expects)."""
     if root and root != "." and f.path.startswith(root + "/"):
@@ -35,7 +72,7 @@ def _aip_lint_impl(ctx):
     ctx.actions.run(
         outputs = [desc],
         inputs = info.transitive_sources,
-        executable = ctx.executable._protoc,
+        executable = _resolve_protoc(ctx),
         arguments = (
             ["-I%s" % p for p in info.transitive_proto_path.to_list()] +
             [
@@ -88,12 +125,8 @@ _aip_lint = rule(
             executable = True,
             cfg = "exec",
         ),
-        "_protoc": attr.label(
-            default = "@protobuf//:protoc",
-            executable = True,
-            cfg = "exec",
-        ),
     },
+    toolchains = _use_proto_toolchain(),
 )
 
 def aip_proto_lint(name, proto, disable_rules = [], enable_rules = [], config = None, **kwargs):
