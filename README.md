@@ -46,6 +46,19 @@ aip_proto_lint(
   files are named by their import path, so AIP-191 passes when the layout is
   idiomatic (see the `strip_import_prefix` note).
 
+## Requirements
+
+Proto toolchain resolution — default in Bazel 9; on Bazel 8 or older pass
+`--incompatible_enable_proto_toolchain_resolution`.
+
+`aip_proto_lint` regenerates a source-info descriptor set (Bazel's own are built
+without comments, so AIP-0192 would fire on every symbol), which means it runs
+`protoc`. It takes that from the **proto toolchain**, so
+`--@protobuf//bazel/toolchains:prefer_prebuilt_protoc` gets you the prebuilt
+binary and **no C++ toolchain is needed at all**. Naming `@protobuf//:protoc`
+directly — as this rule did before 0.3.0 — forces the from-source build and drags
+a compiler into repos that have no C++ in them.
+
 ## Toolchain
 
 The linter is the upstream **prebuilt** api-linter release binary (v2.3.1),
